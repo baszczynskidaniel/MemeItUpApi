@@ -1,0 +1,6 @@
+@MemeItUpApi_HostAddress = http://localhost:5211
+
+GET {{MemeItUpApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
