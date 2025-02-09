@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using System;
 using System.Configuration;
 
 namespace MemeItUpApi
@@ -67,14 +68,14 @@ namespace MemeItUpApi
         public bool SameMemeForEveryone { get; set; } = false;
         public bool EveryoneIsTheJudge { get; set; } = true;
         public GameMode GameMode { get; set; } = GameMode.FillInBlank;
-        public bool StartNextRoundAutomatically { get; set; } = true;
-        public int AutomaticRoundStartDelay { get; set; } = 10;
+       // public bool StartNextRoundAutomatically { get; set; } = true;
+        //public int AutomaticRoundStartDelay { get; set; } = 10;
     }
 
     public enum GameMode
     {
-        Cards,
-        FillInBlank,
+        Cards = 0,
+        FillInBlank = 1,
     }
 
     public class CurrentMemeVotedDto
@@ -97,18 +98,29 @@ namespace MemeItUpApi
         Play,
         Vote,
         RoundEnd,
-        GameEnd
+       
+        GameEnd,
+        UNKNOWN,
+        VOTE_CHAR,
+        RoundEndChar,
     }
 
     public class GameSessionDto
     {
+        public List<Player> Players { get; set; }
         public Player Player { get; set; }
-        public GameStateEnum gameState { get; set; }
+        public GameStateEnum GameState { get; set; }
+        public int Round { get; set; }
+        public int NumberOfRounds { get; set; }
 
-        public GameSessionDto(Player player, GameStateEnum gameStateEnum)
+        public GameSessionDto(Player player, GameState gameState)
         {
-            Player = player;
-            gameState = gameStateEnum;
+            this.Player = player;
+            this.GameState = gameState.State;
+            this.Round = gameState.Round;
+            this.NumberOfRounds = gameState.Rules.NumberOfRounds;
+            this.Players = gameState.Players;
+
         }
     }
 
@@ -145,12 +157,53 @@ namespace MemeItUpApi
         public string? Password { get; set; }
     }
 
+    public class VoterCharState
+    {
+        public int currentIndex { get; set; } = 0;
+        public List<Player> ShuffledPlayers { get; set; } = new List<Player>();
+        public Player CurrentChar { get; set; } = null;
+
+        public VoterCharState(GameState gameState)
+        {
+            var random = new Random();
+            ShuffledPlayers = gameState.Players.OrderBy(x => random.Next()).ToList();
+            CurrentChar = ShuffledPlayers[currentIndex];
+        }
+
+        public bool IncrementRound()
+        {
+            if(currentIndex >= ShuffledPlayers.Count - 1)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        public void NextChar()
+        {
+            currentIndex++;
+            if (currentIndex >= ShuffledPlayers.Count)
+            {
+                currentIndex = 0;
+                CurrentChar = ShuffledPlayers[currentIndex];
+              
+            }
+            CurrentChar = ShuffledPlayers[currentIndex];
+           
+        }
+    }
+
 
     public class GameState
     {
-       
+      
         public int Round { get; set; } = 1;
         public GameStateEnum State { get; set; } = GameStateEnum.Lobby;
+
+        public MemeTemplate CurrentMeme { get; set; } = null;
+
+        public VoterCharState VoterCharState { get; set; } = null;
+
         public Rules Rules { get; set; } = new Rules();
 
         public Player Host { get; set; }
@@ -160,23 +213,7 @@ namespace MemeItUpApi
         public List<Vote> Votes { get; set; } = new List<Vote>();
     }
 
-    public class  GameStatePlayingDto
-    {
-        public GameStateEnum State { get; set; }
-        public int NumberOfRounds { get; set; }
-        public int Round { get; set; }
-        public List<Player> Players { get; set; }
-        public string CallerConnectionId { get; set; }
 
-        public GameStatePlayingDto(GameState gameState)
-        {
-            State = gameState.State;
-            NumberOfRounds = gameState.Rules.NumberOfRounds;
-            Round = gameState.Round;
-            Players = gameState.Players;
-            CallerConnectionId = "";
-        }
-    }
 
     public class PlayersDto
     {

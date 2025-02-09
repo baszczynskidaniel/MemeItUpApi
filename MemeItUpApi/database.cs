@@ -46,8 +46,29 @@ namespace MemeItUpApi
                 }).ToList()
             };
         }
-    }
 
+        public MemeTemplate ToMemeTemplate()
+        {
+            var memeId = this.Id == null ? Guid.NewGuid() : (Guid)this.Id;
+            return new MemeTemplate
+            {
+                Id = memeId,
+                ImageUrl = ImageUrl,
+                TextPositions = TextPositions.Select(tp => new TextPosition
+                {
+                    Id = tp.Id == null ? Guid.NewGuid() : (Guid)tp.Id,
+                    Top = tp.Top,
+                    Bottom = tp.Bottom,
+                    Left = tp.Left,
+                    Right = tp.Right,
+                    MemeTemplateId = memeId,
+                    Text = tp.Text
+                }).ToList()
+            };
+
+
+        }
+    }
 
 
 

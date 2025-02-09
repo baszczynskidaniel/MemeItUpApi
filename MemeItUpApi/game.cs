@@ -1,5 +1,6 @@
 ﻿using Application.Services;
 using Core.Interfaces;
+using K4os.Compression.LZ4.Internal;
 using MemeItUpApi;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -9,6 +10,7 @@ using System;
 using System.Configuration;
 using System.Diagnostics.Eventing.Reader;
 using System.Numerics;
+using static MemeItUpApi.MemeTemplateDto;
 
 
 
@@ -39,6 +41,7 @@ namespace Core.Interfaces
         public event Func<GameStateEnum, Task> OnGameStateChanged;
         public void UpdateRules(Rules rules);
         public void FinishReviewResult(Player player);
+        public void SetCurrentMeme(MemeTemplate? meme);
     }
 }
 
@@ -48,6 +51,7 @@ namespace Application.Services
     {
 
         private readonly GameState _gameState = new();
+        private readonly IMemeTemplateService _memeTemplateService;
 
         public GameState GetGameState()
         {
@@ -100,7 +104,7 @@ namespace Application.Services
         }
 
 
-        public void Vote(MakeVoteDto voteDto, Player voter )
+        public void Vote(MakeVoteDto voteDto, Player voter)
         {
 
             var meme = _gameState.Memes.First(m => m.MemeInGameId == voteDto.MemeInGameId);
@@ -115,17 +119,27 @@ namespace Application.Services
             });
             meme.Score += voteDto.ScoreChange;
             memeAuthor.Score += voteDto.ScoreChange;
-            if(!HasRemainingMemesToVoteFor(voter))
-                voter.State = PlayerStateEnum.Waiting;
 
-            if (_gameState.Players.All(p => p.State == PlayerStateEnum.Waiting))
+            if (_gameState.Rules.EveryoneIsTheJudge) { 
+                if (!HasRemainingMemesToVoteFor(voter))
+                    voter.State = PlayerStateEnum.Waiting;
+
+                if (_gameState.Players.All(p => p.State == PlayerStateEnum.Waiting))
+                {
+                    foreach (var player in _gameState.Players)
+                    {
+                        player.State = PlayerStateEnum.Playing;
+                    }
+                    _gameState.State = GameStateEnum.RoundEnd;
+
+                }
+            } else
             {
                 foreach (var player in _gameState.Players)
                 {
                     player.State = PlayerStateEnum.Playing;
                 }
-                _gameState.State = GameStateEnum.RoundEnd;
-                OnGameStateChanged?.Invoke(_gameState.State);
+                _gameState.State = GameStateEnum.RoundEndChar;
             }
         }
 
@@ -143,12 +157,26 @@ namespace Application.Services
 
             if (_gameState.Players.All(p => p.State == PlayerStateEnum.Waiting))
             {
-                foreach (var player in _gameState.Players)
+               
+                if(_gameState.Rules.EveryoneIsTheJudge)
                 {
-                    player.State = PlayerStateEnum.Playing;
+                    foreach (var player in _gameState.Players)
+                    {
+                        player.State = PlayerStateEnum.Playing;
+                    }
+                    _gameState.State = GameStateEnum.Vote;
                 }
-                _gameState.State = GameStateEnum.Vote;
-                OnGameStateChanged?.Invoke(_gameState.State);
+                else
+                {
+                    foreach (var player in _gameState.Players)
+                    {
+                        player.State = PlayerStateEnum.Waiting;
+                    }
+                    _gameState.State = GameStateEnum.VOTE_CHAR;
+                    _gameState.VoterCharState.CurrentChar.State = PlayerStateEnum.Playing;
+                }
+            
+                
             }
         }
 
@@ -161,9 +189,14 @@ namespace Application.Services
             _gameState.Players.Add(player);
         }
 
+
+
+
         public void LeaveLobby(string connectionId)
         {
-            if (_gameState.Players.Count() == 1) {
+            // If there is only one player
+            if (_gameState.Players.Count == 1)
+            {
                 _gameState.Rules = new Rules();
                 _gameState.Memes.Clear();
                 _gameState.Round = 1;
@@ -171,20 +204,32 @@ namespace Application.Services
                 _gameState.Host = null;
                 _gameState.Players.Clear();
                 _gameState.Votes.Clear();
-                
-                return;
-            }
-            if(_gameState.Host.ConnectionId == connectionId)
-            {
-                _gameState.Players.RemoveAll(p => p.ConnectionId == connectionId);
-                _gameState.Host = _gameState.Players.First();
-            } else
-            {
-                _gameState.Players.RemoveAll(p => p.ConnectionId == connectionId);
-            }
-            OnGameStateChanged?.Invoke(_gameState.State);
+                _gameState.CurrentMeme = null;
+                _gameState.VoterCharState = null;
 
+
+            }
+            else if (_gameState.Host != null)
+            {
+                // Remove player based on connectionId
+                _gameState.Players.RemoveAll(p => p.ConnectionId == connectionId);
+
+                // Re-assign host if the host left
+                if (_gameState.Host.ConnectionId == connectionId)
+                {
+                    if (_gameState.Players.Count > 0)
+                    {
+                        _gameState.Host = _gameState.Players.First();
+                    }
+                    else
+                    {
+                        _gameState.Host = null;
+                    }
+                }
+
+            }
         }
+
 
         public IEnumerable<Player> GetPlayers()
         {
@@ -194,11 +239,22 @@ namespace Application.Services
 
         public void StartGame()
         {
+            
             _gameState.Players.ForEach(p => p.State = PlayerStateEnum.Playing);
             _gameState.State = GameStateEnum.Play;
-            OnGameStateChanged?.Invoke(_gameState.State); // Notify observers
-
+      
+            if(!_gameState.Rules.EveryoneIsTheJudge)
+            {
+                _gameState.VoterCharState = new VoterCharState(_gameState);
+                _gameState.VoterCharState.CurrentChar.State = PlayerStateEnum.Waiting;
+            } else
+            {
+                _gameState.VoterCharState = null;
+            }
         }
+
+        
+
 
         public List<MemeInGame> GetMemesInGameInRounds()
         {
@@ -209,20 +265,50 @@ namespace Application.Services
         public void FinishReviewResult(Player player)
         {
             player.State = PlayerStateEnum.Waiting;
+            
             if(_gameState.Players.All(p => p.State == PlayerStateEnum.Waiting))
             {
-                if (_gameState.Round == _gameState.Rules.NumberOfRounds)
-                    _gameState.State = GameStateEnum.Lobby;
+                if (!_gameState.Rules.EveryoneIsTheJudge)
+                {
+                    if(_gameState.VoterCharState.IncrementRound())
+                    {
+                        _gameState.Round++;
+                    }
+                    _gameState.VoterCharState.NextChar();
+                }
                 else
+                {
+                    _gameState.Round++;
+                }
+                if (_gameState.Round>=_gameState.Rules.NumberOfRounds)
+                {
+                    _gameState.State = GameStateEnum.Lobby;
+                    foreach (var p in _gameState.Players)
+                    {
+                        p.State = PlayerStateEnum.Lobby;
+                    }
+                }
+                else
+                {
                     _gameState.State = GameStateEnum.Play;
-                OnGameStateChanged?.Invoke(_gameState.State);
+                    foreach (var p in _gameState.Players)
+                    {
+                        p.State = PlayerStateEnum.Playing;
+                    }
+
+                    if (!_gameState.Rules.EveryoneIsTheJudge)
+                    {
+                        _gameState.VoterCharState.CurrentChar.State = PlayerStateEnum.Waiting;
+                    }
+                }
+              
             }
         }
 
         public GameSessionDto GetGameSession(string connectionId)
         {
             var player = _gameState.Players.First(p => p.ConnectionId == connectionId);
-            return new GameSessionDto(player, _gameState.State);
+            return new GameSessionDto(player, _gameState);
         }
         
         public void FinishRound(Player player)
@@ -235,14 +321,15 @@ namespace Application.Services
                 {
                     _gameState.State = GameStateEnum.GameEnd;
                     SetPlayersState(PlayerStateEnum.Playing);
-                    OnGameStateChanged?.Invoke(_gameState.State);
+               
                     return;
                 }
                 _gameState.State = GameStateEnum.Play;
-                OnGameStateChanged?.Invoke(_gameState.State);
+              
             }   
         }
 
+    
 
         private void SetPlayersState(PlayerStateEnum state)
         {
@@ -252,7 +339,13 @@ namespace Application.Services
             }
         }
 
+        public  void SetCurrentMeme(MemeTemplate? meme)
+        {
+            _gameState.CurrentMeme = meme;
+        }
+
     }
+   
 }
 
 
@@ -260,7 +353,7 @@ public class GameHub : Hub
 {
     private readonly IGameService _gameService;
     private readonly ILogger<GameHub> _logger;
-
+    private readonly IMemeTemplateService _memeTemplateService;
 
     public async Task BroadcastGameStateVotingDto()
     {
@@ -313,8 +406,9 @@ public class GameHub : Hub
         {
             var gameStateVotingDto = new GameStateVotingDto(gameState);
             await Clients.All.SendAsync("BroadcastGameStateVotingDto", gameStateVotingDto);
-            await SendGameSessionToAllPlayers();
+         
         }
+        await SendGameSessionToAllPlayers();
     }
 
     public async Task SendRoundResult()
@@ -329,7 +423,18 @@ public class GameHub : Hub
     {
         var caller = _gameService.GetPlayerByConnectionId(Context.ConnectionId);
         _gameService.FinishReviewResult(caller);
-        await SendAllPlayers();
+        if (_gameService.GetGameState().Rules.SameMemeForEveryone)
+        {
+            var memeDto = await _memeTemplateService.GetRandomTemplate();
+            if (memeDto != null)
+            {
+                var meme = memeDto.ToMemeTemplate();
+                _gameService.SetCurrentMeme(meme);
+            }
+        }
+
+
+        await SendGameSessionToAllPlayers();
     }
 
     public async Task SendLobby()
@@ -344,7 +449,11 @@ public class GameHub : Hub
 
     public async Task UpdateRules(Rules rules)
     {
-        _gameService.UpdateRules(rules);
+        _gameService.UpdateRules(
+          
+                rules
+            
+        );
         await SendAllLobby();
     }
 
@@ -359,27 +468,47 @@ public class GameHub : Hub
         await Clients.All.SendAsync(HubMessages.RECEIVE_PLAYERS, new PlayersDto(_gameService.GetGameState()));
     }
 
-    public async Task FinishRound()
-    {
-
-    }
 
 
-    public async Task BroadcastGameStatePlaying()
-    {
-        var gameState = _gameService.GetGameState();
-        var gameStatePlayingDto = new GameStatePlayingDto(gameState);
-        gameStatePlayingDto.CallerConnectionId = Context.ConnectionId;
-        await Clients.Caller.SendAsync("BroadcastGameStatePlaying", gameStatePlayingDto);
-
-    }
+ 
 
     public async Task StartGame()
     {
+       
         _gameService.StartGame();
-     
+        if(_gameService.GetGameState().Rules.SameMemeForEveryone)
+        {
+            var memeDto = await _memeTemplateService.GetRandomTemplate();
+            if (memeDto != null)
+            {
+                var meme = memeDto.ToMemeTemplate();
+                _gameService.SetCurrentMeme(meme);
+            }
+        }
+        else
+        {
+            _gameService.SetCurrentMeme(null);
+        }
+        await SendGameSessionToAllPlayers();
+
     }
 
+    public async Task SendMeme()
+    {
+        
+        var meme = _gameService.GetGameState().CurrentMeme;
+        if (meme == null)
+        {
+            var memeDto = await _memeTemplateService.GetRandomTemplate();
+            if (memeDto != null)
+            {
+                meme = memeDto.ToMemeTemplate();
+                _gameService.SetCurrentMeme(meme);
+            }
+        }
+        await Clients.Caller.SendAsync("ReceiveMeme", meme);
+
+    }
 
 
     public async Task BroadcastInitialMemesForVoting()
@@ -404,21 +533,17 @@ public class GameHub : Hub
     {
         _gameService.PostMeme(memeTemplateDto.toMemeTemplateDto(), Context.ConnectionId);
         var gameState = _gameService.GetGameState();
-        var gameStatePlayingDto = new GameStatePlayingDto(gameState);
+      
+         await SendGameSessionToAllPlayers();
 
-        foreach (var player in gameState.Players)
-        {
-            gameStatePlayingDto.CallerConnectionId = player.ConnectionId;
-            await Clients.Client(player.ConnectionId).SendAsync("BroadcastGameStatePlaying", gameStatePlayingDto);
-        }
-    
     }
 
-    public GameHub(IGameService gameService, ILogger<GameHub> logger)
+    public GameHub(IGameService gameService, ILogger<GameHub> logger, IMemeTemplateService memeTemplateService)
     {
         _gameService = gameService;
         _logger = logger;
         _gameService.OnGameStateChanged += OnGameStateChanged;
+        _memeTemplateService = memeTemplateService;
     }
 
     public async Task OnGameStateChanged(GameStateEnum gameState)
@@ -442,7 +567,7 @@ public class GameHub : Hub
         var players = _gameService.GetPlayers();
        
         await Clients.All.SendAsync(HubMessages.RECEIVE_LOBBY, _gameService.GetLobbyDto());
-
+        await SendGameSessionToAllPlayers();
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
@@ -452,13 +577,14 @@ public class GameHub : Hub
         _gameService.LeaveLobby(Context.ConnectionId);
         var players = _gameService.GetPlayers();
         await base.OnDisconnectedAsync(exception);
+        await Clients.All.SendAsync(HubMessages.RECEIVE_LOBBY, _gameService.GetLobbyDto());
+        await SendGameSessionToAllPlayers();
     }
 
     public async Task LeaveLobby()
     {
         _gameService.LeaveLobby(Context.ConnectionId);
-        var players = _gameService.GetPlayers();
-       
+        await SendGameSessionToAllPlayers();
     }
 
     public async Task SendGameSessionToCaller()
@@ -528,6 +654,16 @@ public class LobbyController : ControllerBase
         return Ok(_gameService.GetLobbyDto());
     }
 
+    [HttpPost("udpateRules")]
+    public async Task<IActionResult> UpdateRules([FromBody] Rules rules)
+    {
+        _gameService.UpdateRules(rules);
+        //await _hubContext.Clients.All.SendAsync("BroadcastPlayers", new LobbyPlayersDto(players.ToList()));
+        return Ok(_gameService.GetLobbyDto());
+    }
+
+
+
     //[HttpPost("join")]
     //public async Task<IActionResult> JoinLobby([FromBody] Player playerDto)
     //{
@@ -536,15 +672,15 @@ public class LobbyController : ControllerBase
     //        Name = playerDto.Name,
     //        IsUsingMobileDevice = playerDto.IsUsingMobileDevice,
     //        Id = Guid.NewGuid(),
-            
+
 
     //    };
     //    _lobbyService.JoinLobby(player);
 
     //    var players = _lobbyService.GetPlayers();
-       
+
     //    await _hubContext.Clients.All.SendAsync("BroadcastPlayers", new LobbyPlayersDto(players.ToList()));
     //    return Ok(player.Id);
     //}
-  
+
 }
