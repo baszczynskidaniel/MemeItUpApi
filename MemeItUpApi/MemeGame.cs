@@ -47,7 +47,19 @@ namespace MemeItUpApi
         }
     }
 
-    public class LobbyDto
+    public class GameStateVotingCharDto
+    {
+        public List<MemeInGame> MemesToVote { get; set; }
+        public Player CurrentChar { get; set; }
+        public GameStateVotingCharDto(GameState gameState)
+        {
+            CurrentChar = gameState.VoterCharState.CurrentChar;
+            MemesToVote = gameState.Memes.Where(
+                    m => m.Round == gameState.Round).ToList();
+        }
+    }
+
+        public class LobbyDto
     {
         public List<Player> Players { get; set; }
         public Player Host { get; set; }
@@ -170,14 +182,7 @@ namespace MemeItUpApi
             CurrentChar = ShuffledPlayers[currentIndex];
         }
 
-        public bool IncrementRound()
-        {
-            if(currentIndex >= ShuffledPlayers.Count - 1)
-            {
-                return true;
-            }
-            return false;
-        }
+    
 
         public void NextChar()
         {

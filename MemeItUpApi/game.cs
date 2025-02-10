@@ -228,6 +228,10 @@ namespace Application.Services
                 }
 
             }
+            if (_gameState.Players.Count == 1)
+            {
+                _gameState.State = GameStateEnum.Lobby;
+            }
         }
 
 
@@ -270,11 +274,9 @@ namespace Application.Services
             {
                 if (!_gameState.Rules.EveryoneIsTheJudge)
                 {
-                    if(_gameState.VoterCharState.IncrementRound())
-                    {
-                        _gameState.Round++;
-                    }
+                   
                     _gameState.VoterCharState.NextChar();
+                    _gameState.Round++;
                 }
                 else
                 {
@@ -378,7 +380,12 @@ public class GameHub : Hub
         }
     }
 
-
+    public async Task SendGameStateVotingCharDto()
+    {
+        var gameState = _gameService.GetGameState();
+        var gameStateVotingCharDto = new GameStateVotingCharDto(gameState);
+        await Clients.Caller.SendAsync("ReceiveGameStateVotingCharDto", gameStateVotingCharDto);
+    }
 
 
 
